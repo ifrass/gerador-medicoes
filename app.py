@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Medições - Eng. Civil", layout="centered")
-st.title("🏗️ Extrator Puro de Medições")
+st.title("Extrator Puro de Medições")
 st.info("Gera planilha limpa. Mantém itens separados por etapa e preserva a ordem original das abas do projeto.")
 
 # --- FUNÇÕES AUXILIARES ---
@@ -187,7 +187,7 @@ st.markdown("---")
 action_container = st.empty()
 
 if arquivos_analise:
-    if action_container.button("🚀 Extrair Dados Limpos"):
+    if action_container.button("Extrair Dados Limpos"):
         action_container.button("Processando... ⏳", disabled=True)
         
         with st.spinner("Gerando planilhas de extração..."):
@@ -231,4 +231,4 @@ if arquivos_analise:
                 if st.button("Tentar Novamente"):
                      st.rerun()
 else:
-    st.button("🚀 Extrair Dados Limpos", disabled=True, help="Faça upload dos arquivos primeiro")
+    st.button("Extrair Dados Limpos", disabled=True, help="Faça upload dos arquivos primeiro")
