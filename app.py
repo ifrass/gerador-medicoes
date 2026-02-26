@@ -1,16 +1,15 @@
 import streamlit as st
 import openpyxl
-from openpyxl.utils import get_column_letter
 from io import BytesIO
 import zipfile
 import os
 import re
-import tempfile
-import traceback
+from openpyxl.utils import get_column_letter
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Medições - Eng. Civil", layout="centered")
-st.title("🏗️ Gerador Automático de Medições")
+st.title("🏗️ Extrator Puro de Medições")
+st.info("Gera planilha limpa. Mantém itens separados por etapa e preserva a ordem original das abas do projeto.")
 
 # --- FUNÇÕES AUXILIARES ---
 def limpar_codigo(valor):
@@ -25,249 +24,211 @@ def para_float(valor):
     except:
         return 0.0
 
-def ordenar_abas_ruas(sheet_names):
-    ruas = [s for s in sheet_names if s.upper().startswith(("RUA", "PAV", "TRECHO"))]
-    def chave_ordenacao(nome):
-        if "INICIAL" in nome.upper(): return 0
-        numeros = re.findall(r'\d+', nome)
-        if numeros: return int(numeros[0])
-        return 999 
-    return sorted(ruas, key=chave_ordenacao)
+def filtrar_abas_ruas(sheet_names):
+    abas_sistema = [
+        "DADOS_OBRA", "CSV_GLOBAL", "CSV - CARTILHA", "DADOS_GLOBAL_INICIAL",
+        "RESUMO", "CRONOGRAMA", "BDI", "CPU", "ENCARGOS",
+        "FAIXAS_ULTIMA_MEDIÇÃO", "CRONOGRAMA_EMPRESA", "GRANDES_ITENS_EMPRESA",
+        "DESCRIÇÕES_ETAPAS_EMPRESA", "GRANDES_ITENS", "DESCRIÇÕES_ETAPAS_EDITAL",
+        "DMT", "CRONOGRAMA_EDITAL", "ANEXO_V_(ES)", "INFORMATIVO",
+        "INSTRUÇÕES", "PLANO_AMOSTRAGEM", "CARTILHA_GLOBAL_PAV",
+        "NOVOS_TRAÇOS_CBUQ", "VIAB-PAV", "VIAB-PRAÇA", "ENSAIOS_DE_ORÇAMENTO",
+        "COMPOSIÇÕES_COMPLEMENTARES", "SERVIÇOS", "INSUMOS", "DERPR", "DER_MAT", "PREFEITURAS"
+    ]
+    # Retorna as abas exatamente na ordem original (esquerda para a direita), apenas ignorando as de sistema
+    return [s for s in sheet_names if s.strip().upper() not in abas_sistema]
 
-# --- PROCESSAMENTO (CORE) ---
-def processar_arquivo(arquivo_analise, modelo_bytes, nome_modelo_original):
+# --- PROCESSAMENTO (EXTRAÇÃO PURA) ---
+def extrair_dados_puros(arquivo_analise):
+    wb_analise = openpyxl.load_workbook(arquivo_analise, data_only=True)
     
-    extensao = os.path.splitext(nome_modelo_original)[1].lower()
-    eh_macro = (extensao == '.xlsm')
+    wb_limpo = openpyxl.Workbook()
     
-    with tempfile.NamedTemporaryFile(delete=False, suffix=extensao) as tmp_modelo:
-        tmp_modelo.write(modelo_bytes.getvalue())
-        tmp_path = tmp_modelo.name
+    # 1. Aba Principal de Dados
+    ws_limpo = wb_limpo.active
+    ws_limpo.title = "Dados_Para_Copiar"
+    
+    # 0. NOME DO ARQUIVO E LISTA DE RUAS
+    abas_ruas = filtrar_abas_ruas(wb_analise.sheetnames)
+    nome_municipio = "MUNICIPIO"
+    num_sam = "00"
+    
+    if abas_ruas:
+        ws_info = wb_analise[abas_ruas[0]]
+        val_h5 = ws_info['H5'].value
+        if val_h5: nome_municipio = str(val_h5).strip().replace(" ", "_").upper()
+        val_k5 = ws_info['K5'].value
+        if val_k5: num_sam = str(val_k5).strip()
 
-    nome_arquivo_final = "medicao_padrao" + extensao 
+    nome_arquivo_final = f"Dados_Limpos_{nome_municipio}_sam{num_sam}.xlsx"
 
-    try:
-        wb_modelo = openpyxl.load_workbook(tmp_path, keep_vba=eh_macro) 
-        wb_analise = openpyxl.load_workbook(arquivo_analise, data_only=True)
+    # 2. Nova Aba: Índice de Ruas (Agora na ordem exata da planilha base)
+    ws_lista_ruas = wb_limpo.create_sheet(title="Lista_de_Ruas")
+    ws_lista_ruas.cell(row=1, column=1).value = "Nº"
+    ws_lista_ruas.cell(row=1, column=2).value = "Nome da Aba (Rua/Trecho)"
+    ws_lista_ruas.column_dimensions['B'].width = 40 
+    
+    for idx, nome_rua in enumerate(abas_ruas, start=1):
+        ws_lista_ruas.cell(row=idx+1, column=1).value = idx
+        ws_lista_ruas.cell(row=idx+1, column=2).value = nome_rua
+
+    # A. LISTA MESTRA
+    aba_origem_csv = None
+    if 'CSV_GLOBAL' in wb_analise.sheetnames: aba_origem_csv = 'CSV_GLOBAL'
+    elif 'CSV - Cartilha' in wb_analise.sheetnames: aba_origem_csv = 'CSV - Cartilha'
+    
+    mapa_linha_exata = {} 
+    mapa_codigo_lista = {} 
+
+    if aba_origem_csv:
+        ws_orig = wb_analise[aba_origem_csv]
+        linha_dest = 10
+        seq_contador = 1
         
-        # --- 0. EXTRAÇÃO DO NOME DO ARQUIVO (H5 e K5) ---
-        abas_ruas = ordenar_abas_ruas(wb_analise.sheetnames)
-        nome_municipio = "MUNICIPIO"
-        num_sam = "00"
+        ws_limpo.cell(row=9, column=6).value = "Item"
+        ws_limpo.cell(row=9, column=7).value = "Código"
+        ws_limpo.cell(row=9, column=8).value = "Descrição"
         
-        if abas_ruas:
-            ws_info = wb_analise[abas_ruas[0]]
+        for r_orig in range(11, ws_orig.max_row + 1):
+            filtro = ws_orig.cell(row=r_orig, column=4).value 
             
-            val_h5 = ws_info['H5'].value
-            if val_h5: 
-                nome_municipio = str(val_h5).strip().replace(" ", "_").upper()
-            
-            val_k5 = ws_info['K5'].value
-            if val_k5:
-                num_sam = str(val_k5).strip()
-
-        nome_arquivo_final = f"planilha_medição_{nome_municipio}_sam{num_sam}_lt_1_med_01__Lei14133_v08_2025{extensao}"
-
-        # --- A. DADOS DA OBRA ---
-        if 'Dados_Obra' in wb_analise.sheetnames and 'Dados_Obra' in wb_modelo.sheetnames:
-            ws_orig = wb_analise['Dados_Obra']
-            ws_dest = wb_modelo['Dados_Obra']
-            for row in range(4, 61):
-                for col in range(2, 41): 
-                    val = ws_orig.cell(row=row, column=col).value
-                    if val is not None:
-                        try: ws_dest.cell(row=row, column=col).value = val
-                        except: pass
-
-        # --- B. LISTA MESTRA ---
-        aba_origem_csv = None
-        if 'CSV_GLOBAL' in wb_analise.sheetnames: aba_origem_csv = 'CSV_GLOBAL'
-        elif 'CSV - Cartilha' in wb_analise.sheetnames: aba_origem_csv = 'CSV - Cartilha'
-        
-        ws_global_dest = None
-        if 'Dados_GLOBAL_Inicial' in wb_modelo.sheetnames:
-            ws_global_dest = wb_modelo['Dados_GLOBAL_Inicial']
-        else:
-            raise Exception("Aba 'Dados_GLOBAL_Inicial' não encontrada.")
-
-        mapa_codigo_linha = {} 
-
-        if aba_origem_csv and ws_global_dest:
-            ws_orig = wb_analise[aba_origem_csv]
-            max_row = ws_orig.max_row
-            linha_dest = 10
-            seq_contador = 1
-            
-            for r_orig in range(11, max_row + 1):
-                filtro = ws_orig.cell(row=r_orig, column=4).value 
+            if filtro and str(filtro).strip().upper() == 'X':
+                raw_code = ws_orig.cell(row=r_orig, column=6).value
+                code_key = limpar_codigo(raw_code)
                 
-                if filtro and str(filtro).strip().upper() == 'X':
-                    raw_code = ws_orig.cell(row=r_orig, column=6).value
-                    code_key = limpar_codigo(raw_code)
-                    
-                    if code_key:
-                        mapa_codigo_linha[code_key] = linha_dest
+                if code_key:
+                    mapa_linha_exata[r_orig] = {"linha_dest": linha_dest, "codigo": code_key}
+                    mapa_codigo_lista.setdefault(code_key, []).append(linha_dest)
 
-                    for c_orig in range(5, 12): 
-                        c_dest = c_orig + 1 
-                        if c_orig == 5: 
-                            v_orig = ws_orig.cell(row=r_orig, column=c_orig).value
-                            if v_orig and (isinstance(v_orig, (int, float)) or str(v_orig).strip().isdigit()):
-                                try: 
-                                    ws_global_dest.cell(row=linha_dest, column=c_dest).value = seq_contador
-                                    seq_contador += 1
-                                except: pass
-                            else:
-                                try: ws_global_dest.cell(row=linha_dest, column=c_dest).value = v_orig
-                                except: pass
+                for c_orig in range(5, 12): 
+                    c_dest = c_orig + 1 
+                    if c_orig == 5: 
+                        v_orig = ws_orig.cell(row=r_orig, column=c_orig).value
+                        if v_orig and (isinstance(v_orig, (int, float)) or str(v_orig).strip().isdigit()):
+                            ws_limpo.cell(row=linha_dest, column=c_dest).value = seq_contador
+                            seq_contador += 1
                         else:
-                            val = ws_orig.cell(row=r_orig, column=c_orig).value
-                            if val is not None:
-                                try: ws_global_dest.cell(row=linha_dest, column=c_dest).value = val
-                                except: pass
+                            ws_limpo.cell(row=linha_dest, column=c_dest).value = v_orig
+                    else:
+                        val = ws_orig.cell(row=r_orig, column=c_orig).value
+                        if val is not None:
+                            ws_limpo.cell(row=linha_dest, column=c_dest).value = val
+                linha_dest += 1
+
+    # B. QUANTIDADES POR RUA
+    coluna_atual = 19 # S
+    
+    for nome_aba in abas_ruas:
+        ws_rua = wb_analise[nome_aba]
+        
+        ws_limpo.cell(row=8, column=coluna_atual).value = nome_aba
+        
+        for linhas_dest in mapa_codigo_lista.values():
+            for linha_item in linhas_dest:
+                ws_limpo.cell(row=linha_item, column=coluna_atual).value = 0.0
+
+        ocorrencias_vistas = {} 
+
+        max_r_rua = min(ws_rua.max_row, 5000)
+        
+        for r in range(11, max_r_rua + 1):
+            filtro_rua = ws_rua.cell(row=r, column=3).value
+            if filtro_rua and str(filtro_rua).strip().upper() == 'X':
+                raw_code_rua = ws_rua.cell(row=r, column=7).value
+                key_rua = limpar_codigo(raw_code_rua)
+                
+                qtd_rua = para_float(ws_rua.cell(row=r, column=20).value)
+                
+                if key_rua:
+                    linha_alvo = None
                     
-                    linha_dest += 1
-
-        # --- C. DISTRIBUIÇÃO POR RUA ---
-        coluna_atual = 19 # S
-        
-        if ws_global_dest:
-            for nome_aba in abas_ruas:
-                ws_rua = wb_analise[nome_aba]
-                
-                try: ws_global_dest.cell(row=8, column=coluna_atual).value = nome_aba
-                except: pass
-                
-                for linha_item in mapa_codigo_linha.values():
-                    ws_global_dest.cell(row=linha_item, column=coluna_atual).value = 0
-
-                max_r_rua = min(ws_rua.max_row, 5000)
-                
-                for r in range(11, max_r_rua + 1):
-                    filtro_rua = ws_rua.cell(row=r, column=3).value
-                    if filtro_rua and str(filtro_rua).strip().upper() == 'X':
-                        raw_code_rua = ws_rua.cell(row=r, column=7).value
-                        key_rua = limpar_codigo(raw_code_rua)
+                    if r in mapa_linha_exata and mapa_linha_exata[r]["codigo"] == key_rua:
+                        linha_alvo = mapa_linha_exata[r]["linha_dest"]
+                    else:
+                        idx = ocorrencias_vistas.get(key_rua, 0)
+                        lista_linhas = mapa_codigo_lista.get(key_rua, [])
                         
-                        qtd_rua = ws_rua.cell(row=r, column=20).value 
-                        valor_numerico = para_float(qtd_rua)
+                        if idx < len(lista_linhas):
+                            linha_alvo = lista_linhas[idx]
+                        elif len(lista_linhas) > 0:
+                            linha_alvo = lista_linhas[-1]
+
+                    if linha_alvo is not None:
+                        valor_atual = ws_limpo.cell(row=linha_alvo, column=coluna_atual).value
+                        if valor_atual is None: valor_atual = 0.0
+                        ws_limpo.cell(row=linha_alvo, column=coluna_atual).value = valor_atual + qtd_rua
                         
-                        if key_rua and key_rua in mapa_codigo_linha:
-                            linha_alvo = mapa_codigo_linha[key_rua]
-                            
-                            valor_atual = ws_global_dest.cell(row=linha_alvo, column=coluna_atual).value
-                            if valor_atual is None: valor_atual = 0
-                            
-                            novo_total = float(valor_atual) + valor_numerico
-                            ws_global_dest.cell(row=linha_alvo, column=coluna_atual).value = novo_total
+                    ocorrencias_vistas[key_rua] = ocorrencias_vistas.get(key_rua, 0) + 1
 
-                coluna_atual += 1
-                if coluna_atual > 55: break 
+        coluna_atual += 1
+        if coluna_atual > 55: break 
 
-        # --- D. FÓRMULAS ---
-        try: ws_global_dest['N8'].value = len(abas_ruas)
-        except: pass
-        
-        ultima_coluna_ruas_idx = coluna_atual - 1
-        if ultima_coluna_ruas_idx >= 19:
-            letra_ultima = get_column_letter(ultima_coluna_ruas_idx)
-            for linha_item in mapa_codigo_linha.values():
+    # C. FÓRMULAS DE CHECAGEM
+    ultima_coluna_ruas_idx = coluna_atual - 1
+    if ultima_coluna_ruas_idx >= 19:
+        letra_ultima = get_column_letter(ultima_coluna_ruas_idx)
+        for linhas_dest in mapa_codigo_lista.values():
+            for linha_item in linhas_dest:
                 formula = f'=IF(K{linha_item}=0,"-",IF(ROUND(K{linha_item},2)=ROUND(SUM(S{linha_item}:{letra_ultima}{linha_item}),2),"Ok","Verificar"))'
-                ws_global_dest.cell(row=linha_item, column=18).value = formula
+                ws_limpo.cell(row=linha_item, column=18).value = formula
 
-        wb_modelo.save(tmp_path)
-        wb_modelo.close()
-        
-        with open(tmp_path, "rb") as f:
-            dados_finais = BytesIO(f.read())
-            
-    except Exception as e:
-        raise e
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-            
+    dados_finais = BytesIO()
+    wb_limpo.save(dados_finais)
+    wb_limpo.close()
+    wb_analise.close()
+    
     return dados_finais, nome_arquivo_final
 
 # --- INTERFACE ---
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("1. Arquivos de Análise")
-    arquivos_analise = st.file_uploader("Arquivos .xlsx", accept_multiple_files=True)
-
-with col2:
-    st.subheader("2. Modelo")
-    arquivo_modelo = st.file_uploader("Modelo (.xlsx/.xlsm)", type=['xlsx', 'xlsm'])
+st.subheader("1. Arquivo(s) de Análise da Prefeitura")
+arquivos_analise = st.file_uploader("Arquivos .xlsx", accept_multiple_files=True)
 
 st.markdown("---")
-
-# Container para o botão de ação (Placeholder)
-# Isso permite substituir o botão por outro elemento (texto/botão inativo)
 action_container = st.empty()
 
-# Verificação se arquivos existem
-if arquivos_analise and arquivo_modelo:
-    
-    # Renderiza o botão no placeholder
-    if action_container.button("🚀 Processar"):
-        
-        # 1. SUBSTITUI O BOTÃO IMEDIATAMENTE POR "PROCESSANDO" (INATIVO)
-        # Isso impede o clique duplo visualmente e dá feedback instantâneo
+if arquivos_analise:
+    if action_container.button("🚀 Extrair Dados Limpos"):
         action_container.button("Processando... ⏳", disabled=True)
         
-        # 2. INICIA O SPINNER (Bolinha rodando)
-        with st.spinner("Lendo arquivos e calculando medições..."):
-            
+        with st.spinner("Gerando planilhas de extração..."):
             try:
                 total_arquivos = len(arquivos_analise)
-                modelo_bytes = BytesIO(arquivo_modelo.getvalue())
-                nome_modelo = arquivo_modelo.name
                 
-                # --- CASO 1: ARQUIVO ÚNICO ---
                 if total_arquivos == 1:
                     arq = arquivos_analise[0]
-                    res, nome_gerado = processar_arquivo(arq, modelo_bytes, nome_modelo)
+                    res, nome_gerado = extrair_dados_puros(arq)
                     
-                    st.success(f"✅ Sucesso! Arquivo gerado: {nome_gerado}")
-                    
-                    ext = os.path.splitext(nome_gerado)[1].lower()
-                    mime_type = "application/vnd.ms-excel.sheet.macroEnabled.12" if ext == '.xlsm' else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    st.success(f"✅ Sucesso! Arquivo extraído: {nome_gerado}")
                     
                     st.download_button(
-                        label="📥 Baixar Planilha",
+                        label="📥 Baixar Dados Limpos",
                         data=res.getvalue(),
                         file_name=nome_gerado,
-                        mime=mime_type
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
-                # --- CASO 2: MÚLTIPLOS ARQUIVOS (ZIP) ---
                 else:
                     zip_buffer = BytesIO()
-                    
-                    # Sem barra de status textual, apenas o spinner visual
                     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-                        for i, arq in enumerate(arquivos_analise):
-                            res, nome_gerado = processar_arquivo(arq, modelo_bytes, nome_modelo)
+                        for arq in arquivos_analise:
+                            res, nome_gerado = extrair_dados_puros(arq)
                             zip_file.writestr(nome_gerado, res.getvalue())
                     
-                    st.success(f"✅ {total_arquivos} arquivos processados com sucesso!")
+                    st.success(f"✅ {total_arquivos} extrações geradas com sucesso!")
                     
                     st.download_button(
-                        label="📥 Baixar ZIP",
+                        label="📥 Baixar Lote ZIP",
                         data=zip_buffer.getvalue(),
-                        file_name="Lote_Medicoes.zip",
+                        file_name="Lote_Dados_Limpos.zip",
                         mime="application/zip"
                     )
                     
             except Exception as e:
-                # Em caso de erro, limpamos o botão de "Processando" para permitir tentar de novo
                 action_container.empty()
                 st.error(f"Ocorreu um erro: {e}")
+                import traceback
                 st.error(traceback.format_exc())
-                # Recria o botão original para tentar novamente
                 if st.button("Tentar Novamente"):
                      st.rerun()
-
 else:
-    # Mostra botão desabilitado se não houver arquivos
-    st.button("🚀 Processar", disabled=True, help="Faça upload dos arquivos primeiro")
+    st.button("🚀 Extrair Dados Limpos", disabled=True, help="Faça upload dos arquivos primeiro")
