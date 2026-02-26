@@ -6,10 +6,16 @@ import os
 import re
 from openpyxl.utils import get_column_letter
 
+# --- CONTROLE DE VERSÃO ---
+VERSAO_SISTEMA = "1.0.0"
+DATA_ATUALIZACAO = "Fevereiro/2026"
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Gerador de Medições - Eng. Civil", layout="centered")
+st.set_page_config(page_title="Extrator Análise", layout="centered")
+
+# --- ÁREA PRINCIPAL ---
 st.title("Extrator Puro de Medições")
-st.info("Gera planilha limpa. Mantém itens separados por etapa e preserva a ordem original das abas do projeto.")
+st.caption(f"**Versão {VERSAO_SISTEMA}** ({DATA_ATUALIZACAO}) | Gera planilha limpa, mantém itens separados por etapa e preserva a ordem original das abas do projeto.")
 
 # --- FUNÇÕES AUXILIARES ---
 def limpar_codigo(valor):
@@ -33,9 +39,8 @@ def filtrar_abas_ruas(sheet_names):
         "DMT", "CRONOGRAMA_EDITAL", "ANEXO_V_(ES)", "INFORMATIVO",
         "INSTRUÇÕES", "PLANO_AMOSTRAGEM", "CARTILHA_GLOBAL_PAV",
         "NOVOS_TRAÇOS_CBUQ", "VIAB-PAV", "VIAB-PRAÇA", "ENSAIOS_DE_ORÇAMENTO",
-        "COMPOSIÇÕES_COMPLEMENTARES", "SERVIÇOS", "INSUMOS", "DERPR", "DER_MAT", "PREFEITURAS"
+        "COMPOSIÇÕES_COMPLEMENTARES", "SERVIÇOS", "INSUMOS", "DERPR", "DER_MAT","PREFEITURAS"
     ]
-    # Retorna as abas exatamente na ordem original (esquerda para a direita), apenas ignorando as de sistema
     return [s for s in sheet_names if s.strip().upper() not in abas_sistema]
 
 # --- PROCESSAMENTO (EXTRAÇÃO PURA) ---
@@ -62,7 +67,7 @@ def extrair_dados_puros(arquivo_analise):
 
     nome_arquivo_final = f"Dados_Limpos_{nome_municipio}_sam{num_sam}.xlsx"
 
-    # 2. Nova Aba: Índice de Ruas (Agora na ordem exata da planilha base)
+    # 2. Nova Aba: Índice de Ruas
     ws_lista_ruas = wb_limpo.create_sheet(title="Lista_de_Ruas")
     ws_lista_ruas.cell(row=1, column=1).value = "Nº"
     ws_lista_ruas.cell(row=1, column=2).value = "Nome da Aba (Rua/Trecho)"
