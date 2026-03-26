@@ -8,7 +8,7 @@ import tempfile
 from openpyxl.utils import get_column_letter
 
 # --- CONTROLE DE VERSÃO ---
-VERSAO_SISTEMA = "1.0.1"
+VERSAO_SISTEMA = "1.0.2"
 DATA_ATUALIZACAO = "Fevereiro/2026"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -46,13 +46,12 @@ def filtrar_abas_ruas(sheet_names):
 
 # --- PROCESSAMENTO (EXTRAÇÃO PURA) ---
 def extrair_dados_puros(arquivo_analise):
-    # SALVAMENTO TEMPORÁRIO FÍSICO (Resolve o erro BadZipFile para arquivos gigantes)
+    # SALVAMENTO TEMPORÁRIO FÍSICO
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         tmp.write(arquivo_analise.getvalue())
         tmp_path = tmp.name
 
     try:
-        # Lê o arquivo do disco em vez da memória
         wb_analise = openpyxl.load_workbook(tmp_path, data_only=True)
         
         wb_limpo = openpyxl.Workbook()
@@ -174,7 +173,7 @@ def extrair_dados_puros(arquivo_analise):
                         ocorrencias_vistas[key_rua] = ocorrencias_vistas.get(key_rua, 0) + 1
 
             coluna_atual += 1
-            if coluna_atual > 55: break 
+            # O limite de colunas foi removido daqui!
 
         # C. FÓRMULAS DE CHECAGEM
         ultima_coluna_ruas_idx = coluna_atual - 1
@@ -193,7 +192,6 @@ def extrair_dados_puros(arquivo_analise):
         return dados_finais, nome_arquivo_final
 
     finally:
-        # Garante que o arquivo temporário gigantesco seja apagado do HD no final
         if os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
